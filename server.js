@@ -1,53 +1,35 @@
 /*
 File: server.js
-Purpose: Single-file Node/Express app that allows an admin to upload photobooth pictures from their device,
-and allows public users to view and download all uploaded pictures.
-
-Run:
- 1. mkdir photobooth && cd photobooth
- 2. Save this file as server.js inside that folder
- 3. npm init -y
- 4. npm install express multer express-session mime-types
- 5. node server.js
- 6. Open http://localhost:3000 (gallery) and http://localhost:3000/admin (admin upload)
-
-Environment variables:
-  ADMIN_PASSWORD (optional) - default: ICTESS
-  PORT (optional) - default: 3000
+Purpose: Photobooth app storing uploads on Cloudinary (works on Render).
 */
 
 const express = require('express');
 const multer = require('multer');
 const session = require('express-session');
-const path = require('path');
-const fs = require('fs');
-const mime = require('mime-types');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ICTESS';
 
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const safeName = path.basename(file.originalname, ext).replace(/[^a-z0-9._-]/gi, '_');
-    cb(null, `${Date.now()}-${safeName}${ext}`);
-  }
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME || 'dqq1yhtgv',
+  api_key: process.env.CLOUD_API_KEY || '444688418873568',
+  api_secret: process.env.CLOUD_API_SECRET || 'd6EeoIKOLCyPzWlL2f7vgmoR9yM',
 });
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Only image files are allowed (jpg, png, gif, webp).'));
-  }
+// Multer + Cloudinary storage
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'photobooth_uploads',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+  },
 });
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
@@ -58,17 +40,11 @@ app.use(session({
   cookie: { maxAge: 24 * 3600 * 1000 }
 }));
 
-app.use('/uploads', express.static(UPLOAD_DIR));
+// In-memory image metadata (replace with DB later if needed)
+let imageStore = [];
 
 function listImages() {
-  const files = fs.readdirSync(UPLOAD_DIR).filter(f => {
-    const t = mime.lookup(f) || '';
-    return t.startsWith('image/');
-  });
-  return files
-    .map(f => ({ name: f, mtime: fs.statSync(path.join(UPLOAD_DIR, f)).mtime }))
-    .sort((a, b) => b.mtime - a.mtime)
-    .map(o => o.name);
+  return imageStore.sort((a, b) => b.uploadedAt - a.uploadedAt);
 }
 
 function pageHTML({ title, body, extraHead = '' }) {
@@ -127,9 +103,9 @@ app.get('/', (req, res) => {
     <div class="grid">
       ${images.map(img => `
         <div class="thumb card">
-          <a href="/uploads/${encodeURIComponent(img)}" target="_blank"><img src="/uploads/${encodeURIComponent(img)}" alt="${img}"></a>
+          <a href="${img.url}" target="_blank"><img src="${img.url}" alt="${img.filename}"></a>
           <div class="meta">
-            <a class="btn" href="/uploads/${encodeURIComponent(img)}" download>Download</a>
+            <a class="btn" href="${img.url}" download>Download</a>
           </div>
         </div>
       `).join('\n')}
@@ -172,9 +148,9 @@ app.get('/admin', (req, res) => {
       <div class="grid">
         ${images.map(img => `
           <div class="thumb card">
-            <a href="/uploads/${encodeURIComponent(img)}" target="_blank"><img src="/uploads/${encodeURIComponent(img)}" alt="${img}"></a>
+            <a href="${img.url}" target="_blank"><img src="${img.url}" alt="${img.filename}"></a>
             <div class="meta">
-              <a class="btn" href="/uploads/${encodeURIComponent(img)}" download>Download</a>
+              <a class="btn" href="${img.url}" download>Download</a>
             </div>
           </div>
         `).join('\n')}
@@ -201,6 +177,15 @@ app.post('/admin/upload', (req, res, next) => {
   if (!req.session.isAdmin) return res.status(403).send('Forbidden');
   next();
 }, upload.array('photos', 20), (req, res) => {
+  if (req.files) {
+    req.files.forEach(file => {
+      imageStore.push({
+        filename: file.originalname,
+        url: file.path,
+        uploadedAt: new Date(),
+      });
+    });
+  }
   res.redirect('/admin');
 });
 
@@ -210,4 +195,4 @@ app.use((err, req, res, next) => {
   res.status(400).send(pageHTML({ title: 'Error', body }));
 });
 
-app.listen(PORT, () => console.log(`Photobooth app running on http://localhost:${PORT} (uploads: ${UPLOAD_DIR})`));
+app.listen(PORT, () => console.log(`Photobooth app running on port ${PORT} (Cloudinary storage)`));
