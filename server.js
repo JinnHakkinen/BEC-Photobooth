@@ -1,6 +1,7 @@
 /*
 File: server.js
 Purpose: Photobooth app storing uploads on Cloudinary (works on Render).
+Now includes delete button for admin to remove images from Cloudinary.
 */
 
 const express = require('express');
@@ -65,9 +66,11 @@ function pageHTML({ title, body, extraHead = '' }) {
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
     .thumb{border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;border:2px solid var(--accent2)}
     .thumb img{width:100%;height:200px;object-fit:cover;display:block}
-    .meta{padding:12px;display:flex;justify-content:center;align-items:center;background:var(--accent);}
+    .meta{padding:12px;display:flex;justify-content:center;align-items:center;gap:8px;background:var(--accent);}
     .btn{background:var(--accent2);color:#fff;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:600;transition:background 0.2s}
     .btn:hover{background:#b8860b}
+    .btn.delete{background:#b22222}
+    .btn.delete:hover{background:#800000}
     .muted{color:var(--muted);font-size:13px}
     form{display:flex;flex-direction:column;gap:12px}
     input[type=file], input[type=password]{padding:8px;border:1px solid var(--accent2);border-radius:6px}
@@ -94,6 +97,7 @@ function pageHTML({ title, body, extraHead = '' }) {
 </html>`;
 }
 
+// Public gallery
 app.get('/', (req, res) => {
   const images = listImages();
   const body = `
@@ -115,6 +119,7 @@ app.get('/', (req, res) => {
   res.send(pageHTML({ title: 'BEC Photobooth Gallery', body }));
 });
 
+// Admin page
 app.get('/admin', (req, res) => {
   if (!req.session.isAdmin) {
     const body = `
@@ -151,6 +156,9 @@ app.get('/admin', (req, res) => {
             <a href="${img.url}" target="_blank"><img src="${img.url}" alt="${img.filename}"></a>
             <div class="meta">
               <a class="btn" href="${img.url}" download>Download</a>
+              <form method="POST" action="/admin/delete/${encodeURIComponent(img.public_id)}">
+                <button class="btn delete" type="submit">Delete</button>
+              </form>
             </div>
           </div>
         `).join('\n')}
@@ -160,6 +168,7 @@ app.get('/admin', (req, res) => {
   res.send(pageHTML({ title: 'Admin', body }));
 });
 
+// Admin login
 app.post('/admin/login', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -169,10 +178,12 @@ app.post('/admin/login', (req, res) => {
   res.send(pageHTML({ title: 'Login failed', body: `<div class="card"><p>Wrong password. <a href="/admin">Try again</a></p></div>` }));
 });
 
+// Admin logout
 app.get('/admin/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/'));
 });
 
+// Upload handler
 app.post('/admin/upload', (req, res, next) => {
   if (!req.session.isAdmin) return res.status(403).send('Forbidden');
   next();
@@ -181,7 +192,8 @@ app.post('/admin/upload', (req, res, next) => {
     req.files.forEach(file => {
       imageStore.push({
         filename: file.originalname,
-        url: file.path,
+        url: file.path,            // Cloudinary URL
+        public_id: file.filename,  // Cloudinary public ID
         uploadedAt: new Date(),
       });
     });
@@ -189,10 +201,25 @@ app.post('/admin/upload', (req, res, next) => {
   res.redirect('/admin');
 });
 
+// Delete handler
+app.post('/admin/delete/:id', async (req, res) => {
+  if (!req.session.isAdmin) return res.status(403).send('Forbidden');
+  const publicId = req.params.id;
+  try {
+    await cloudinary.uploader.destroy(publicId);
+    imageStore = imageStore.filter(img => img.public_id !== publicId);
+  } catch (err) {
+    console.error("Error deleting image:", err);
+  }
+  res.redirect('/admin');
+});
+
+// Error handler
 app.use((err, req, res, next) => {
   console.error(err && err.stack ? err.stack : err);
   const body = `<div class="card"><h3>Error</h3><p class="muted">${String(err.message || err)}</p><p><a href="/">Back to gallery</a></p></div>`;
   res.status(400).send(pageHTML({ title: 'Error', body }));
 });
 
+// Start server
 app.listen(PORT, () => console.log(`Photobooth app running on port ${PORT} (Cloudinary storage)`));
